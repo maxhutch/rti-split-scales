@@ -32,31 +32,35 @@ logger = logging.getLogger(__name__)
 problem = de.ParsedProblem(axis_names=['x','z'],
                            field_names=['p','b','u','w','bz','uz','wz'],
                            param_names=['D','N','G'])
+problem.add_equation("bz - dz(b) = 0")
+problem.add_equation("uz - dz(u) = 0")
+problem.add_equation("wz - dz(w) = 0")
 problem.add_equation("dx(u) + wz = 0")
 problem.add_equation("dt(b) - D*(dx(dx(b)) + dz(bz))               = - u*dx(b) - w*bz")
 problem.add_equation("dt(u) - N*(dx(dx(u)) + dz(uz)) + dx(p)       = - u*dx(u) - w*uz")
 problem.add_equation("dt(w) - N*(dx(dx(w)) + dz(wz)) + dz(p) - G*b = - u*dx(w) - w*wz")
-problem.add_equation("bz - dz(b) = 0")
-problem.add_equation("uz - dz(u) = 0")
-problem.add_equation("wz - dz(w) = 0")
-problem.add_left_bc("bz = 0")
-problem.add_left_bc("u = 0")
-problem.add_left_bc("w = 0")
-problem.add_right_bc("bz = 0")
-problem.add_right_bc("u = 0")
-problem.add_right_bc("w = 0", condition="(dx != 0)")
-problem.add_int_bc("p = 0", condition="(dx == 0)")
+#problem.add_left_bc("bz = 0")
+#problem.add_left_bc("u = 0")
+#problem.add_left_bc("w = 0")
+#problem.add_right_bc("bz = 0")
+#problem.add_right_bc("u = 0")
+#problem.add_right_bc("w = 0", condition="(dx != 0)")
+#problem.add_int_bc("p = 0", condition="(dx == 0)")
+problem.add_int_bc("p = 0")
+problem.add_int_bc("w = 0")
+problem.add_int_bc("u = 0")
 
 # Parameters
-Lx, Lz = (1., 1.)
+Lx, Lz = (0.1, 0.1)
 Atwood = 1e-3
 Grav   = 9.8
 Visc   = 8.9e-7
 Prandtl = 1.
+Delta = 0.01
 
 # Create bases and domain
-x_basis = de.Fourier(1024, interval=(0, Lx), dealias=2/3)
-z_basis = de.Chebyshev(1025, interval=(-Lz/2, Lz/2), dealias=2/3)
+x_basis = de.Fourier(1536, interval=(0, Lx), dealias=2/3)
+z_basis = de.Fourier(1536, interval=(-Lz/2, Lz/2), dealias=2/3)
 domain = de.Domain([x_basis, z_basis], grid_dtype=np.float64)
 
 # Finalize problem
@@ -79,16 +83,16 @@ bz = solver.state['bz']
 # Linear background + perturbations damped at walls
 zb, zt = z_basis.interval
 pert =  1e-2 * np.random.standard_normal(domain.local_grid_shape) * (zt - z) * (z - zb)
-b['g'] = -Atwood*sp.special.erf((z - pert)/(Lz / 100.))
+b['g'] = -Atwood*sp.special.erf((z - pert)/Delta) + Atwood*sp.special.erf((z - pert + Lz/2.)/Delta) + Atwood*sp.special.erf((z - pert - Lz/2.)/Delta)
 b.differentiate('z', out=bz)
 
 # Integration parameters
-solver.stop_sim_time = 15
-solver.stop_wall_time = 30 * 60.
+solver.stop_sim_time = 10
+solver.stop_wall_time = 180 * 60.
 solver.stop_iteration = np.inf
 
 # Analysis
-snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=300)
+snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.5, max_writes=300)
 snapshots.add_task("p")
 snapshots.add_task("b")
 snapshots.add_task("u")
@@ -102,11 +106,14 @@ CFL.add_velocities(('u', 'w'))
 # Flow properties
 flow = flow_tools.GlobalFlowProperty(solver, cadence=10)
 flow.add_property("sqrt(u*u + w*w) / N", name='Re')
-flow.add_property("bz - dz(b)", name='SplitErrorB')
-flow.add_property("uz - dz(u)", name='SplitErrorU')
-flow.add_property("wz - dz(w)", name='SplitErrorW')
+flow.add_property("(bz - dz(b))**2.", name='SplitErrorB')
+flow.add_property("(uz - dz(u))**2.", name='SplitErrorU')
+flow.add_property("(wz - dz(w))**2.", name='SplitErrorW')
+flow.add_property("(dz(b))**2.", name='dBz')
+flow.add_property("(dz(u))**2.", name='dUz')
+flow.add_property("(dz(w))**2.", name='dWz')
 
-# Main loop
+ # Main loop
 try:
     logger.info('Starting loop')
     start_time = time.time()
@@ -116,9 +123,9 @@ try:
         if (solver.iteration-1) % 10 == 0:
             logger.info('Iteration: %i, Time: %e, dt: %e' %(solver.iteration, solver.sim_time, dt))
             logger.info('Max Re  = %f' %flow.max('Re'))
-            logger.info('Split B = %f' %flow.max('SplitErrorB'))
-            logger.info('Split U = %f' %flow.max('SplitErrorU'))
-            logger.info('Split W = %f' %flow.max('SplitErrorW'))
+            logger.info('Split B = %e' %np.sqrt(flow.grid_average('SplitErrorB') / flow.grid_average('dBz')))
+            logger.info('Split U = %e' %np.sqrt(flow.grid_average('SplitErrorU') / flow.grid_average('dUz')))
+            logger.info('Split W = %e' %np.sqrt(flow.grid_average('SplitErrorW') / flow.grid_average('dWz')))
 except:
     logger.error('Exception raised, triggering end of main loop.')
     raise
